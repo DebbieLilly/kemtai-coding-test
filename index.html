@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Pose Estimation</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+            margin: 0;
+            flex-direction: column;
+        }
+        #videoContainer {
+            position: relative;
+            width: 500px;
+            height: 500px;
+            border-radius: 50%;
+            border: 5px solid red;
+            overflow: hidden;
+            margin-bottom: 20px; /* Added margin to separate counter from circle */
+        }
+        video {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: auto;
+            height: 100%;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #counter {
+            font-size: 20px;
+            background-color: rgba(255, 255, 255, 0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="counter">Left Elbow Opens: 0</div>
+    <div id="videoContainer">
+        <video id="video" playsinline></video>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet"></script>
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const counterElement = document.getElementById('counter');
+        let leftElbowOpenCount = 0;
+
+        async function setupCamera() {
+            video.width = 500;
+            video.height = 500;
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: true
+            });
+            video.srcObject = stream;
+            return new Promise(resolve => {
+                video.onloadedmetadata = () => {
+                    resolve(video);
+                };
+            });
+        }
+
+        function toDegrees(radians) {
+            return radians * 180 / Math.PI;
+        }
+
+        function getAngle(pointA, pointB, pointC) {
+            const AB = {
+                x: pointB.x - pointA.x,
+                y: pointB.y - pointA.y
+            };
+            const BC = {
+                x: pointC.x - pointB.x,
+                y: pointC.y - pointB.y
+            };
+            const dotProduct = AB.x * BC.x + AB.y * BC.y;
+            const magnitudeAB = Math.sqrt(AB.x ** 2 + AB.y ** 2);
+            const magnitudeBC = Math.sqrt(BC.x ** 2 + BC.y ** 2);
+            const angle = Math.acos(dotProduct / (magnitudeAB * magnitudeBC));
+            return toDegrees(angle);
+        }
+
+        function drawCircle(ctx, x, y, radius, color) {
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+
+        function drawLine(ctx, pointA, pointB, color, width = 2) {
+            ctx.beginPath();
+            ctx.moveTo(pointA.x, pointA.y);
+            ctx.lineTo(pointB.x, pointB.y);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.stroke();
+        }
+
+        function drawArc(ctx, x, y, radius, startAngle, endAngle, color, width = 2) {
+            ctx.beginPath();
+            ctx.arc(x, y, radius, startAngle, endAngle);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.stroke();
+        }
+
+        function isElbowOpen(previousAngle, currentAngle, threshold = 30) {
+            return previousAngle < threshold && currentAngle >= threshold;
+        }
+
+        async function main() {
+            await setupCamera();
+            video.play();
+            const net = await posenet.load();
+            let previousLeftElbowAngle = 180;
+
+            async function detectPose() {
+                const pose = await net.estimateSinglePose(video, {
+                    flipHorizontal: false
+                });
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                canvas.width = video.width;
+                canvas.height = video.height;
+
+                const keypoints = pose.keypoints.filter(keypoint => keypoint.score > 0.5);
+                const points = {};
+                keypoints.forEach(keypoint => {
+                    points[keypoint.part] = keypoint.position;
+                    drawCircle(ctx, keypoint.position.x, keypoint.position.y, 5, 'red');
+                });
+
+                const adjacentPoints = [
+                    ['leftShoulder', 'rightShoulder'],
+                    ['leftShoulder', 'leftElbow'],
+                    ['leftElbow', 'leftWrist'],
+                    ['rightShoulder', 'rightElbow'],
+                    ['rightElbow', 'rightWrist'],
+                    ['leftShoulder', 'leftHip'],
+                    ['rightShoulder', 'rightHip'],
+                    ['leftHip', 'rightHip'],
+                    ['leftHip', 'leftKnee'],
+                    ['leftKnee', 'leftAnkle'],
+                    ['rightHip', 'rightKnee'],
+                    ['rightKnee', 'rightAnkle']
+                ];
+
+                adjacentPoints.forEach(pair => {
+                    if (points[pair[0]] && points[pair[1]]) {
+                        drawLine(ctx, points[pair[0]], points[pair[1]], 'blue');
+                    }
+                });
+
+                const anglesToMeasure = [
+                    ['leftShoulder', 'leftElbow', 'leftWrist'],
+                    ['rightShoulder', 'rightElbow', 'rightWrist'],
+                    ['leftHip', 'leftKnee', 'leftAnkle'],
+                    ['rightHip', 'rightKnee', 'rightAnkle']
+                ];
+
+                anglesToMeasure.forEach(trio => {
+                    if (points[trio[0]] && points[trio[1]] && points[trio[2]]) {
+                        const angle = getAngle(points[trio[0]], points[trio[1]], points[trio[2]]);
+                        const radius = 20;
+                        const startAngle = -Math.PI / 2;
+                        const endAngle = (angle * Math.PI / 180) - Math.PI / 2;
+                        drawArc(ctx, points[trio[1]].x, points[trio[1]].y, radius, startAngle, endAngle, 'blue');
+                        ctx.fillText(Math.round(angle) + '°', points[trio[1]].x + radius, points[trio[1]].y);
+                    }
+                });
+
+                if (points.leftShoulder && points.leftElbow && points.leftWrist) {
+                    const currentLeftElbowAngle = getAngle(points.leftShoulder, points.leftElbow, points.leftWrist);
+                    if (isElbowOpen(previousLeftElbowAngle, currentLeftElbowAngle)) {
+                        leftElbowOpenCount++;
+                        counterElement.textContent = `Left Elbow Opens: ${leftElbowOpenCount}`;
+                    }
+                    previousLeftElbowAngle = currentLeftElbowAngle;
+                }
+
+                requestAnimationFrame(detectPose);
+            }
+
+            detectPose();
+        }
+
+        main();
+    </script>
+</body>
+</html>
